@@ -35,29 +35,54 @@ DEFAULT_THRESHOLD = 30
 # Secrets / gates
 # ============================================================
 def read_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Read Streamlit secret safely.
+
+    Local development fallback:
+    - If .streamlit/secrets.toml does not exist, st.secrets can raise.
+    - In that case, return the provided default instead of stopping the app.
+    """
     try:
-        return st.secrets.get(name, default)
+        value = st.secrets.get(name, None)
     except Exception:
+        value = None
+
+    if value is None or str(value).strip() == "":
         return default
+    return str(value)
 
 
-def password_gate(secret_name: str, session_key: str, title: str, fallback_secret_name: Optional[str] = None) -> None:
+def password_gate(
+    secret_name: str,
+    session_key: str,
+    title: str,
+    fallback_secret_name: Optional[str] = None,
+    local_default: str = "dev",
+) -> None:
+    """Simple password gate.
+
+    Public deployment:
+    - Put APP_PASSWORD / SHARE_PAGE_PASSWORD in Streamlit secrets.
+    Local development:
+    - If secrets are missing, password defaults to "dev" so local testing works.
+    """
     expected = read_secret(secret_name)
+    using_local_default = False
+
     if expected is None and fallback_secret_name:
         expected = read_secret(fallback_secret_name)
 
-    if not expected:
-        st.error(f"Missing secret: {secret_name}")
-        st.code(
-            f'{secret_name} = "your-password"',
-            language="toml",
-        )
-        st.stop()
+    if expected is None:
+        expected = local_default
+        using_local_default = True
 
     if st.session_state.get(session_key) is True:
         return
 
     st.subheader(title)
+
+    if using_local_default:
+        st.info('Local dev mode: secrets not found. Use password "dev". Set .streamlit/secrets.toml before public deployment.')
+
     entered = st.text_input("Password", type="password", key=f"{session_key}_input")
     if st.button("Enter", key=f"{session_key}_button"):
         if secrets_equal(entered, expected):
@@ -545,6 +570,7 @@ def render_histogram(file_bytes: bytes, threshold: int) -> None:
 def gps_picker(default_lat: float, default_lon: float, key: str) -> Tuple[float, float]:
     lat_key = f"{key}_lat"
     lon_key = f"{key}_lon"
+
     if lat_key not in st.session_state:
         st.session_state[lat_key] = float(default_lat)
     if lon_key not in st.session_state:
@@ -552,28 +578,60 @@ def gps_picker(default_lat: float, default_lon: float, key: str) -> Tuple[float,
 
     col1, col2 = st.columns(2)
     with col1:
-        st.session_state[lat_key] = st.number_input("Latitude", -90.0, 90.0, float(st.session_state[lat_key]), format="%.6f", key=f"{key}_lat_input")
+        st.session_state[lat_key] = st.number_input(
+            "Latitude",
+            -90.0,
+            90.0,
+            float(st.session_state[lat_key]),
+            format="%.6f",
+            key=f"{key}_lat_input",
+        )
     with col2:
-        st.session_state[lon_key] = st.number_input("Longitude", -180.0, 180.0, float(st.session_state[lon_key]), format="%.6f", key=f"{key}_lon_input")
+        st.session_state[lon_key] = st.number_input(
+            "Longitude",
+            -180.0,
+            180.0,
+            float(st.session_state[lon_key]),
+            format="%.6f",
+            key=f"{key}_lon_input",
+        )
 
     lat = float(st.session_state[lat_key])
     lon = float(st.session_state[lon_key])
 
     if folium is not None and st_folium is not None:
-        m = folium.Map(location=[lat, lon], zoom_start=13)
-        folium.Marker([lat, lon], tooltip="GPS").add_to(m)
-        result = st_folium(m, height=360, use_container_width=True, key=f"{key}_map")
-        clicked = result.get("last_clicked") if isinstance(result, dict) else None
-        if clicked:
-            clicked_lat = float(clicked["lat"])
-            clicked_lon = float(clicked["lng"])
-            if abs(clicked_lat - lat) > 1e-7 or abs(clicked_lon - lon) > 1e-7:
-                st.session_state[lat_key] = clicked_lat
-                st.session_state[lon_key] = clicked_lon
-                st.rerun()
+        use_click_map = st.checkbox("지도에서 클릭으로 좌표 지정", value=False, key=f"{key}_use_click_map")
+
+        if use_click_map:
+            m = folium.Map(location=[lat, lon], zoom_start=13)
+            folium.Marker([lat, lon], tooltip="Current GPS").add_to(m)
+
+            # st_folium naturally reruns once when map interaction is sent back to Streamlit.
+            # Do not call st.rerun() here; otherwise a click can feel like a rerun loop.
+            result = st_folium(
+                m,
+                height=360,
+                use_container_width=True,
+                key=f"{key}_map",
+                returned_objects=["last_clicked"],
+            )
+            clicked = result.get("last_clicked") if isinstance(result, dict) else None
+
+            if clicked:
+                clicked_lat = float(clicked["lat"])
+                clicked_lon = float(clicked["lng"])
+
+                if abs(clicked_lat - lat) > 1e-7 or abs(clicked_lon - lon) > 1e-7:
+                    st.session_state[lat_key] = clicked_lat
+                    st.session_state[lon_key] = clicked_lon
+                    st.success(f"좌표가 선택되었습니다: {clicked_lat:.6f}, {clicked_lon:.6f}")
+                    lat = clicked_lat
+                    lon = clicked_lon
+        else:
+            st.map(pd.DataFrame([{"lat": lat, "lon": lon}]), latitude="lat", longitude="lon")
     else:
         st.map(pd.DataFrame([{"lat": lat, "lon": lon}]), latitude="lat", longitude="lon")
-        st.caption("지도 클릭 지정은 streamlit-folium 설치 시 활성화됩니다.")
+        st.caption("지도 클릭 지정은 streamlit-folium 설치 시 활성화됩니다. 현재는 수동 입력 좌표만 표시합니다.")
 
     return float(st.session_state[lat_key]), float(st.session_state[lon_key])
 
@@ -709,18 +767,19 @@ else:
     password_gate("SHARE_PAGE_PASSWORD", "share_page_unlocked", "Share login", fallback_secret_name="APP_PASSWORD")
 
     st.subheader("Mini Share")
-    stats = global_store_stats()
+    with st.expander("Storage statistics", expanded=False):
+        stats = global_store_stats()
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Stores", f"{stats['stores']:,}")
-    m2.metric("Files", f"{stats['files']:,}")
-    m3.metric("Stored size", f"{stats['bytes'] / 1024 / 1024:.2f} MB")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Stores", f"{stats['stores']:,}")
+        m2.metric("Files", f"{stats['files']:,}")
+        m3.metric("Stored size", f"{stats['bytes'] / 1024 / 1024:.2f} MB")
 
-    time_df = upload_times_df(stats["items"])
-    if not time_df.empty:
-        st.line_chart(time_df.set_index("hour"), y="files")
-    else:
-        st.write("No uploads yet")
+        time_df = upload_times_df(stats["items"])
+        if not time_df.empty:
+            st.line_chart(time_df.set_index("hour"), y="files")
+        else:
+            st.write("No uploads yet")
 
     st.markdown("### Storage")
     with st.form("storage_key_form"):
