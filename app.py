@@ -598,40 +598,39 @@ def gps_picker(default_lat: float, default_lon: float, key: str) -> Tuple[float,
 
     lat = float(st.session_state[lat_key])
     lon = float(st.session_state[lon_key])
+    st.write(f"Selected GPS: `{lat:.6f}, {lon:.6f}`")
 
+    # Avoid st.map here. st.map/map.py can raise StreamlitAPIException depending on
+    # map backend/config/data shape. Folium is optional and isolated behind a checkbox.
     if folium is not None and st_folium is not None:
         use_click_map = st.checkbox("지도에서 클릭으로 좌표 지정", value=False, key=f"{key}_use_click_map")
-
         if use_click_map:
-            m = folium.Map(location=[lat, lon], zoom_start=13)
-            folium.Marker([lat, lon], tooltip="Current GPS").add_to(m)
+            try:
+                m = folium.Map(location=[lat, lon], zoom_start=13)
+                folium.Marker([lat, lon], tooltip="Current GPS").add_to(m)
 
-            # st_folium naturally reruns once when map interaction is sent back to Streamlit.
-            # Do not call st.rerun() here; otherwise a click can feel like a rerun loop.
-            result = st_folium(
-                m,
-                height=360,
-                use_container_width=True,
-                key=f"{key}_map",
-                returned_objects=["last_clicked"],
-            )
-            clicked = result.get("last_clicked") if isinstance(result, dict) else None
+                result = st_folium(
+                    m,
+                    height=360,
+                    use_container_width=True,
+                    key=f"{key}_map",
+                    returned_objects=["last_clicked"],
+                )
+                clicked = result.get("last_clicked") if isinstance(result, dict) else None
 
-            if clicked:
-                clicked_lat = float(clicked["lat"])
-                clicked_lon = float(clicked["lng"])
-
-                if abs(clicked_lat - lat) > 1e-7 or abs(clicked_lon - lon) > 1e-7:
-                    st.session_state[lat_key] = clicked_lat
-                    st.session_state[lon_key] = clicked_lon
-                    st.success(f"좌표가 선택되었습니다: {clicked_lat:.6f}, {clicked_lon:.6f}")
-                    lat = clicked_lat
-                    lon = clicked_lon
-        else:
-            st.map(pd.DataFrame([{"lat": lat, "lon": lon}]), latitude="lat", longitude="lon")
+                if clicked:
+                    clicked_lat = float(clicked["lat"])
+                    clicked_lon = float(clicked["lng"])
+                    if abs(clicked_lat - lat) > 1e-7 or abs(clicked_lon - lon) > 1e-7:
+                        st.session_state[lat_key] = clicked_lat
+                        st.session_state[lon_key] = clicked_lon
+                        lat = clicked_lat
+                        lon = clicked_lon
+                        st.success(f"좌표가 선택되었습니다: {clicked_lat:.6f}, {clicked_lon:.6f}")
+            except Exception as exc:
+                st.warning(f"지도 표시를 건너뜁니다: {type(exc).__name__}")
     else:
-        st.map(pd.DataFrame([{"lat": lat, "lon": lon}]), latitude="lat", longitude="lon")
-        st.caption("지도 클릭 지정은 streamlit-folium 설치 시 활성화됩니다. 현재는 수동 입력 좌표만 표시합니다.")
+        st.caption("지도 클릭 기능은 streamlit-folium 설치 시 사용할 수 있습니다. 현재는 좌표 입력만 사용합니다.")
 
     return float(st.session_state[lat_key]), float(st.session_state[lon_key])
 
@@ -739,7 +738,7 @@ if page == "Mask":
     elif gps_choice == "GPS 제거":
         gps_mode = "remove"
     elif source_gps:
-        st.map(pd.DataFrame([{"lat": source_gps[0], "lon": source_gps[1]}]), latitude="lat", longitude="lon")
+        st.write(f"Source GPS: `{source_gps[0]:.6f}, {source_gps[1]:.6f}`")
 
     final_jpg_bytes = make_final_jpg_bytes(
         composite_png_bytes=composite_png_bytes,
